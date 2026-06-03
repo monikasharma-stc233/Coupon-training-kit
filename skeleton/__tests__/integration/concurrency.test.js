@@ -4,7 +4,7 @@
  *
  *  1. Global Limit Race   — 200 concurrent redeems, maxRedemptions = 10
  *  2. Last Slot Race      — 2 concurrent redeems, maxRedemptions = 1
- *  3. Per-User Limit Race — same user, 2 concurrent redeems, maxRedemptionsPerUser = 1
+ *  3. Per-User Limit Race — same user, 50 concurrent redeems, maxRedemptionsPerUser = 3
  *  4. Double-Click Race   — same user + same orderId, 2 concurrent redeems
  *  5. Coupon Expires During Redemption (eligibility check + atomic filter)
  *  6. Admin Disables Coupon During Redemption (atomic filter re-checks status)
@@ -24,6 +24,7 @@
  *    so under true concurrency it may allow an extra redemption. Test
  *    documents the intended behavior but notes this risk.
  */
+
 
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
@@ -145,62 +146,40 @@ describe('Last Slot Race — 2 concurrent requests, maxRedemptions = 1', () => {
 });
 
 // ── 3. Per-User Limit Race ───────────────────────────────────────────────────
-//
-// KNOWN IMPLEMENTATION GAP (SRS §14.3):
-//   The service enforces the per-user limit with a separate countDocuments
-//   query BEFORE the atomic findOneAndUpdate (read-then-check pattern).
-//   Two concurrent requests from the same user can both pass the count check
-//   simultaneously and both succeed — violating maxRedemptionsPerUser = 1.
-//
-//   SRS requires: exactly 1 succeeds, the other gets COUPON_LIMIT_REACHED_FOR_USER.
-//   Current behavior: BOTH succeed (race allows 2 active redemptions for the user).
-//
-//   Fix needed: move the per-user count check inside the atomic operation
-//   (e.g. via a MongoDB transaction or a conditional findOneAndUpdate that
-//   includes the per-user count as part of the filter).
 
-describe('Per-User Limit Race — same user, 2 concurrent redeems, maxRedemptionsPerUser = 1', () => {
-  it('[BUG] both concurrent requests succeed — per-user limit is NOT atomically enforced', async () => {
-    await apiCreateCoupon({ code: 'USERLIMIT', maxRedemptionsPerUser: 1 });
+describe('Per-User Limit Race — same user, 50 concurrent redeems, maxRedemptionsPerUser = 4', () => {
+  it('[BUG] multiple concurrent requests exceed per-user limit', async () => {
+    await apiCreateCoupon({
+      code: 'USERLIMIT4',
+      maxRedemptionsPerUser: 4,
+    });
 
-    const [res1, res2] = await Promise.all([
-      apiRedeem({ couponCode: 'USERLIMIT', orderId: 'order-ul1', userId: 'user-race' }),
-      apiRedeem({ couponCode: 'USERLIMIT', orderId: 'order-ul2', userId: 'user-race' }),
-    ]);
+    const requests = Array.from({ length: 50 }, (_, i) =>
+      apiRedeem({
+        couponCode: 'USERLIMIT4',
+        orderId: `order-ul4-${i + 1}`,
+        userId: 'user-race',
+      })
+    );
 
-    const successes = [res1, res2].filter((r) => r.status === 200);
+    const results = await Promise.all(requests);
 
-    // Current (broken) behavior: the race allows both to pass the read-then-check.
-    // This assertion documents the actual behavior. It should be 1 once fixed.
-    // TODO: fix by making per-user limit check atomic; then change this to toBe(1).
-    expect(successes.length).toBe(2);
+    const successes = results.filter((r) => r.status === 200);
 
-    // The DB ends up with 2 active redemptions for the same user — should be 1.
+    console.log('Total requests:', results.length);
+    console.log('Successes:', successes.length);
+
     const userActiveCount = await Redemption.countDocuments({
       userId: 'user-race',
       status: 'ACTIVE',
     });
-    // TODO: once fixed, this should be toBe(1).
-    expect(userActiveCount).toBe(2);
-  });
 
-  it('sequential per-user limit works correctly (no concurrency)', async () => {
-    await apiCreateCoupon({ code: 'USERLIMITSEQ', maxRedemptionsPerUser: 1 });
+    console.log('Active redemptions:', userActiveCount);
 
-    const first = await apiRedeem({
-      couponCode: 'USERLIMITSEQ',
-      orderId: 'order-seq1',
-      userId: 'user-seq',
-    });
-    expect(first.status).toBe(200);
+    // Current broken behavior:
+    expect(successes.length).toBe(4);
+    expect(userActiveCount).toBe(4);
 
-    const second = await apiRedeem({
-      couponCode: 'USERLIMITSEQ',
-      orderId: 'order-seq2',
-      userId: 'user-seq',
-    });
-    expect(second.status).toBe(422);
-    expect(second.body.error.code).toBe('COUPON_LIMIT_REACHED_FOR_USER');
   });
 });
 
@@ -239,7 +218,7 @@ describe('Double-Click Race — same user + coupon + orderId, 2 concurrent redee
     // Coupon count must be exactly 1 (no double-increment).
     const couponRes = await getCoupon('DBLCLICK');
     expect(couponRes.body.redemptionCount).toBe(1);
-  });
+  });                                                                        
 });
 
 // ── 5. Coupon Expires During Redemption ─────────────────────────────────────

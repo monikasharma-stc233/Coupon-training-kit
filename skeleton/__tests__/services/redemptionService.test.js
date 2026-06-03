@@ -21,6 +21,13 @@ jest.mock('../../src/models/Redemption.js', () => ({
   },
 }));
 
+jest.mock('../../src/models/UserCouponCounter.js', () => ({
+  UserCouponCounter: {
+    findOneAndUpdate: jest.fn(),
+    updateOne: jest.fn(),
+  },
+}));
+
 const validCouponId = new mongoose.Types.ObjectId();
 
 function makeMockCoupon(overrides = {}) {
